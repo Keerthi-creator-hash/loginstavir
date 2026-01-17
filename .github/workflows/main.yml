@@ -1,10 +1,5 @@
 name: Cleanup Old Pull Requests and Branches
 
-on:
-  workflow_dispatch: name: Cleanup Old Pull Requests and Branches
-
-on:
-  workflow_dispatch: name: Cleanup Old Pull Requests and Branches
 
 on:
   workflow_dispatch: {}
