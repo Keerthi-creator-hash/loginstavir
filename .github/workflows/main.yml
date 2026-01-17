@@ -1,10 +1,26 @@
 name: Cleanup Old Pull Requests and Branches
 
-
 on:
-  workflow_dispatch: {}
+  # Scheduled trigger: every 15 minutes (UTC)
   schedule:
-    - cron: '*/15 * * * *' # Every 15 minutes (UTC)
+    - cron: '*/15 * * * *'
+
+  # Manual trigger: can be run from GitHub UI with inputs
+  workflow_dispatch:
+    inputs:
+      cutoffMinutes:
+        description: 'PR & branch cutoff age in minutes'
+        required: true
+        default: '5'
+      logLevel:
+        description: 'Log level'
+        required: true
+        default: 'info'
+        type: choice
+        options:
+          - info
+          - warning
+          - debug
 
 permissions:
   contents: write
@@ -15,40 +31,56 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Scheduled-only log
+      - name: Scheduled run info
+        if: github.event_name == 'schedule'
+        run: |
+          echo "⏰ Scheduled cleanup run"
+          echo "Time (UTC): $(date -u)"
+
+      # Manual-only log
+      - name: Manual run info
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "▶️ Manual cleanup run"
+          echo "Cutoff Minutes: ${{ github.event.inputs.cutoffMinutes }}"
+          echo "Log Level: ${{ github.event.inputs.logLevel }}"
+
+      # Actual cleanup logic (runs for BOTH triggers)
       - name: Close old PRs and delete branches
         uses: actions/github-script@v7
         env:
-          PR_CUTOFF_MINUTES: 5
+          PR_CUTOFF_MINUTES: ${{ github.event.inputs.cutoffMinutes || '5' }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            console.log('Cleanup job started at:', new Date().toISOString());
+            console.log('🧹 Cleanup job started');
+            console.log('Trigger:', context.eventName);
+            console.log('Time (UTC):', new Date().toISOString());
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
             const protectedBranches = ['main', 'master', 'develop'];
 
-            // Cutoff in minutes
-            const cutoffMinutes = parseInt(process.env.PR_CUTOFF_MINUTES || '5', 10);
+            const cutoffMinutes = parseInt(process.env.PR_CUTOFF_MINUTES, 10);
+            const cutoffTime = new Date(Date.now() - cutoffMinutes * 60 * 1000);
 
-            const cutoffTime = new Date();
-            cutoffTime.setMinutes(cutoffTime.getMinutes() - cutoffMinutes);
+            console.log(`Cutoff time: ${cutoffTime.toISOString()}`);
 
-            console.log(`Using cutoff time: ${cutoffTime.toISOString()}`);
-
-            const protected = new Set(protectedBranches);
-
+            // Build protected branch set
+            const protectedSet = new Set(protectedBranches);
             try {
-              const protections = await github.paginate(
+              const protectedFromAPI = await github.paginate(
                 github.rest.repos.listBranches,
                 { owner, repo, protected: true }
               );
-              protections.forEach(b => protected.add(b.name));
-            } catch (e) {
-              console.log('Could not fetch protected branches');
+              protectedFromAPI.forEach(b => protectedSet.add(b.name));
+            } catch {
+              console.log('⚠️ Could not fetch protected branches');
             }
 
+            // Fetch open PRs
             const prs = await github.paginate(
               github.rest.pulls.list,
               {
@@ -58,6 +90,8 @@ jobs:
                 per_page: 100,
               }
             );
+
+            console.log(`Found ${prs.length} open PRs`);
 
             for (const pr of prs) {
               const createdAt = new Date(pr.created_at);
@@ -80,7 +114,7 @@ jobs:
                 state: 'closed',
               });
 
-              if (protected.has(headBranch)) {
+              if (protectedSet.has(headBranch)) {
                 console.log(`Skipping protected branch: ${headBranch}`);
                 continue;
               }
@@ -109,9 +143,8 @@ jobs:
                   ref: `heads/${headBranch}`,
                 });
               } catch (err) {
-                console.log(`Could not delete branch ${headBranch}: ${err.message}`);
+                console.log(`⚠️ Could not delete branch ${headBranch}: ${err.message}`);
               }
             }
 
-            console.log('Cleanup job completed');
-
+            console.log('✅ Cleanup job completed');
